@@ -1,0 +1,172 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend-deployment
+  namespace: production
+  labels:
+    app: frontend
+    environment: production
+    tier: presentation
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+        environment: production
+        tier: presentation
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "80"
+        prometheus.io/path: "/metrics"
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - frontend
+                topologyKey: kubernetes.io/hostname
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        fsGroup: 101
+      containers:
+        - name: frontend
+          image: nginx:alpine
+          ports:
+            - containerPort: 80
+              name: http
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "300m"
+          volumeMounts:
+            - name: nginx-config
+              mountPath: /etc/nginx/conf.d/default.conf
+              subPath: nginx.conf
+            - name: html-content
+              mountPath: /usr/share/nginx/html
+            - name: shared-logs
+              mountPath: /var/log/nginx
+          securityContext:
+            runAsUser: 101
+            runAsGroup: 101
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 80
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 3
+      initContainers:
+        - name: setup-html
+          image: busybox:latest
+          command:
+            - /bin/sh
+            - -c
+            - |
+              cat > /usr/share/nginx/html/index.html << 'EOF'
+              <!DOCTYPE html>
+              <html lang="en">
+              <head>
+                  <meta charset="UTF-8">
+                  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                  <title>My Kubernetes App</title>
+                  <style>
+                      body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
+                      .container { max-width: 800px; margin: 0 auto; text-align: center; }
+                      .card { background: rgba(255,255,255,0.1); padding: 30px; border-radius: 10px; margin: 20px 0; }
+                      .status { padding: 10px; margin: 10px; border-radius: 5px; }
+                      .healthy { background: rgba(0,255,0,0.2); }
+                      .loading { background: rgba(255,255,0,0.2); }
+                      button { background: #4CAF50; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; margin: 5px; }
+                      button:hover { background: #45a049; }
+                  </style>
+              </head>
+              <body>
+                  <div class="container">
+                      <h1>🚀 My Kubernetes Application</h1>
+                      <div class="card">
+                          <h2>Frontend Status</h2>
+                          <div id="frontend-status" class="status healthy">✅ Frontend is running!</div>
+                      </div>
+                      <div class="card">
+                          <h2>Backend API</h2>
+                          <div id="backend-status" class="status loading">⏳ Checking backend...</div>
+                          <button onclick="checkBackend()">Test Backend</button>
+                      </div>
+                      <div class="card">
+                          <h2>System Information</h2>
+                          <p>Environment: Production</p>
+                          <p>Deployment: Kubernetes</p>
+                          <p>Load Balancer: ✅ Active</p>
+                          <p>Auto Scaling: ✅ Enabled</p>
+                      </div>
+                  </div>
+                  <script>
+                      async function checkBackend() {
+                          const statusDiv = document.getElementById('backend-status');
+                          statusDiv.textContent = '⏳ Testing backend connection...';
+                          statusDiv.className = 'status loading';
+                          
+                          try {
+                              const response = await fetch('/api/status');
+                              const data = await response.json();
+                              statusDiv.textContent = '✅ Backend API is healthy! ' + data.message;
+                              statusDiv.className = 'status healthy';
+                          } catch (error) {
+                              statusDiv.textContent = '❌ Backend connection failed: ' + error.message;
+                              statusDiv.className = 'status error';
+                          }
+                      }
+                      
+                      // Auto-check backend on load
+                      checkBackend();
+                  </script>
+              </body>
+              </html>
+              EOF
+          volumeMounts:
+            - name: html-content
+              mountPath: /usr/share/nginx/html
+      volumes:
+        - name: nginx-config
+          configMap:
+            name: nginx-config
+        - name: html-content
+          emptyDir: {}
+        - name: shared-logs
+          persistentVolumeClaim:
+            claimName: shared-logs-pvc
+      terminationGracePeriodSeconds: 30

@@ -1,0 +1,308 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-deployment
+  namespace: production
+  labels:
+    app: backend
+    environment: production
+    tier: application
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+        environment: production
+        tier: application
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+        prometheus.io/path: "/metrics"
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - backend
+                topologyKey: kubernetes.io/hostname
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000 # Important: permet l'écriture dans les volumes
+        fsGroupChangePolicy: "OnRootMismatch"
+      containers:
+        - name: backend
+          image: node:18-alpine
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            - name: NODE_ENV
+              valueFrom:
+                configMapKeyRef:
+                  name: backend-config
+                  key: NODE_ENV
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: backend-config
+                  key: LOG_LEVEL
+            - name: PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: backend-config
+                  key: PORT
+            - name: REDIS_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: backend-config
+                  key: REDIS_HOST
+            - name: REDIS_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: backend-config
+                  key: REDIS_PORT
+            - name: POSTGRES_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: backend-config
+                  key: POSTGRES_HOST
+            - name: POSTGRES_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: backend-config
+                  key: POSTGRES_PORT
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: backend-config
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secret
+                  key: DB_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secret
+                  key: JWT_SECRET
+          command:
+            - /bin/sh
+            - -c
+            - |
+              # Create app directory with proper permissions
+              echo "Starting backend application..."
+
+              # Create app directory in user's home (writable)
+              export APP_DIR="/tmp/app"
+              mkdir -p $APP_DIR
+              cd $APP_DIR
+
+              # Ensure log directory has proper permissions
+              mkdir -p /var/log/app
+              chmod 755 /var/log/app
+
+              echo "Creating Node.js application..."
+
+              # Create package.json
+              cat > package.json << 'EOF'
+              {
+                "name": "backend-app",
+                "version": "1.0.0",
+                "main": "server.js",
+                "dependencies": {
+                  "express": "^4.18.0",
+                  "pg": "^8.8.0",
+                  "redis": "^4.3.0"
+                },
+                "scripts": {
+                  "start": "node server.js"
+                }
+              }
+              EOF
+
+              # Create server.js
+              cat > server.js << 'EOF'
+              const express = require('express');
+              const fs = require('fs');
+              const path = require('path');
+              const app = express();
+              const port = process.env.PORT || 3000;
+
+              app.use(express.json());
+
+              // Logging function
+              const log = (message) => {
+                const timestamp = new Date().toISOString();
+                const logMessage = `[${timestamp}] ${message}\n`;
+                console.log(logMessage.trim());
+                
+                // Try to write to log file (with error handling)
+                try {
+                  fs.appendFileSync('/var/log/app/backend.log', logMessage);
+                } catch (err) {
+                  console.error('Warning: Could not write to log file:', err.message);
+                }
+              };
+
+              // Health check endpoint
+              app.get('/health', (req, res) => {
+                log('Health check requested');
+                res.status(200).json({ 
+                  status: 'healthy', 
+                  timestamp: new Date().toISOString(),
+                  uptime: process.uptime()
+                });
+              });
+
+              // Ready check endpoint
+              app.get('/ready', (req, res) => {
+                log('Ready check requested');
+                res.status(200).json({ 
+                  status: 'ready', 
+                  timestamp: new Date().toISOString(),
+                  environment: process.env.NODE_ENV
+                });
+              });
+
+              // Metrics endpoint for Prometheus
+              app.get('/metrics', (req, res) => {
+                res.set('Content-Type', 'text/plain');
+                const uptime = Math.floor(process.uptime());
+                const memory = process.memoryUsage();
+                res.send(`# HELP backend_uptime_seconds Backend uptime in seconds
+              # TYPE backend_uptime_seconds gauge
+              backend_uptime_seconds ${uptime}
+              # HELP backend_memory_usage_bytes Backend memory usage in bytes
+              # TYPE backend_memory_usage_bytes gauge
+              backend_memory_usage_bytes{type="rss"} ${memory.rss}
+              backend_memory_usage_bytes{type="heapUsed"} ${memory.heapUsed}
+              backend_memory_usage_bytes{type="heapTotal"} ${memory.heapTotal}
+              `);
+              });
+
+              // API endpoints
+              app.get('/api/status', (req, res) => {
+                log('Status API called');
+                res.json({ 
+                  message: 'Backend API is running!',
+                  environment: process.env.NODE_ENV || 'development',
+                  timestamp: new Date().toISOString(),
+                  version: '1.0.0',
+                  database: {
+                    host: process.env.POSTGRES_HOST,
+                    database: process.env.POSTGRES_DB
+                  },
+                  cache: {
+                    host: process.env.REDIS_HOST,
+                    port: process.env.REDIS_PORT
+                  }
+                });
+              });
+
+              // Test database connection endpoint
+              app.get('/api/db-test', (req, res) => {
+                log('Database test requested');
+                res.json({
+                  message: 'Database connection test (mock)',
+                  status: 'simulated-ok',
+                  timestamp: new Date().toISOString()
+                });
+              });
+
+              // Test cache connection endpoint
+              app.get('/api/cache-test', (req, res) => {
+                log('Cache test requested');
+                res.json({
+                  message: 'Cache connection test (mock)',
+                  status: 'simulated-ok',
+                  timestamp: new Date().toISOString()
+                });
+              });
+
+              // Graceful shutdown
+              process.on('SIGTERM', () => {
+                log('Received SIGTERM, shutting down gracefully');
+                process.exit(0);
+              });
+
+              app.listen(port, '0.0.0.0', () => {
+                log(`Backend server running on port ${port}`);
+                log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+                log(`Process running as UID: ${process.getuid()}, GID: ${process.getgid()}`);
+              });
+              EOF
+
+              echo "Installing npm dependencies..."
+              npm install --production --no-optional --no-audit --no-fund
+
+              echo "Starting Node.js server..."
+              node server.js
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "200m"
+            limits:
+              memory: "512Mi"
+              cpu: "800m"
+          volumeMounts:
+            - name: shared-logs
+              mountPath: /var/log/app
+            - name: tmp-volume
+              mountPath: /tmp
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 60 # Augmenté pour laisser le temps à npm install
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 3000
+            initialDelaySeconds: 30 # Augmenté pour laisser le temps à npm install
+            periodSeconds: 5
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 3
+      volumes:
+        - name: shared-logs
+          persistentVolumeClaim:
+            claimName: shared-logs-pvc
+        - name: tmp-volume
+          emptyDir: {}
+      terminationGracePeriodSeconds: 30

@@ -1,0 +1,142 @@
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: log-cleanup-cronjob
+  namespace: production
+  labels:
+    app: log-cleanup
+    environment: production
+    tier: utility
+spec:
+  schedule: "0 2 * * *" # Every day at 2:00 AM
+  timeZone: "UTC"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  startingDeadlineSeconds: 3600
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 1800 # 30 minutes timeout
+      template:
+        metadata:
+          labels:
+            app: log-cleanup
+            environment: production
+            tier: utility
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            fsGroup: 1000
+          containers:
+            - name: log-cleanup
+              image: busybox:latest
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  echo "Starting log cleanup job at $(date)"
+
+                  # Create cleanup script
+                  cat > /tmp/cleanup.sh << 'EOF'
+                  #!/bin/sh
+
+                  LOG_DIR="/var/log/shared"
+                  RETENTION_DAYS=7
+
+                  echo "Cleaning up logs older than $RETENTION_DAYS days in $LOG_DIR"
+
+                  if [ ! -d "$LOG_DIR" ]; then
+                    echo "Log directory $LOG_DIR does not exist, creating it..."
+                    mkdir -p "$LOG_DIR"
+                    exit 0
+                  fi
+
+                  # Find and list files older than retention period
+                  echo "Finding files older than $RETENTION_DAYS days..."
+                  find "$LOG_DIR" -type f -name "*.log" -mtime +$RETENTION_DAYS -print
+
+                  # Count files to be deleted
+                  FILE_COUNT=$(find "$LOG_DIR" -type f -name "*.log" -mtime +$RETENTION_DAYS | wc -l)
+                  echo "Found $FILE_COUNT log files to delete"
+
+                  if [ "$FILE_COUNT" -gt 0 ]; then
+                    # Delete old log files
+                    echo "Deleting old log files..."
+                    find "$LOG_DIR" -type f -name "*.log" -mtime +$RETENTION_DAYS -delete
+                    echo "Deleted $FILE_COUNT old log files"
+                    
+                    # Clean up empty directories
+                    echo "Cleaning up empty directories..."
+                    find "$LOG_DIR" -type d -empty -delete 2>/dev/null || true
+                  else
+                    echo "No old log files found to delete"
+                  fi
+
+                  # Generate cleanup report
+                  echo "Generating cleanup report..."
+                  cat > "$LOG_DIR/cleanup-report-$(date +%Y%m%d).log" << REPORT
+                  Log Cleanup Report - $(date)
+                  ================================
+                  Retention Period: $RETENTION_DAYS days
+                  Files Deleted: $FILE_COUNT
+                  Cleanup Status: Success
+                  Next Cleanup: $(date -d '+1 day' +%Y-%m-%d)
+                  REPORT
+
+                  # Show current disk usage
+                  echo "Current disk usage:"
+                  df -h "$LOG_DIR" || echo "Could not determine disk usage"
+
+                  # Show remaining log files
+                  echo "Remaining log files:"
+                  find "$LOG_DIR" -type f -name "*.log" | wc -l
+
+                  echo "Log cleanup completed successfully at $(date)"
+                  EOF
+
+                  chmod +x /tmp/cleanup.sh
+                  /tmp/cleanup.sh
+
+                  # Additional cleanup tasks
+                  echo ""
+                  echo "Running additional cleanup tasks..."
+
+                  # Clean up application logs
+                  echo "Cleaning up application logs..."
+                  find /var/log/shared -name "*.log" -size +100M -exec echo "Large log file found: {}" \;
+                  find /var/log/shared -name "*.log" -size +100M -exec truncate -s 50M {} \;
+
+                  # Clean up compressed logs
+                  echo "Cleaning up old compressed logs..."
+                  find /var/log/shared -name "*.gz" -mtime +30 -delete 2>/dev/null || true
+
+                  # Clean up temporary files
+                  echo "Cleaning up temporary files..."
+                  find /var/log/shared -name "*.tmp" -mtime +1 -delete 2>/dev/null || true
+                  find /var/log/shared -name "core.*" -mtime +1 -delete 2>/dev/null || true
+
+                  echo "All cleanup tasks completed successfully!"
+              resources:
+                requests:
+                  memory: "64Mi"
+                  cpu: "50m"
+                limits:
+                  memory: "128Mi"
+                  cpu: "100m"
+              volumeMounts:
+                - name: shared-logs
+                  mountPath: /var/log/shared
+              securityContext:
+                runAsUser: 1000
+                runAsGroup: 1000
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: false
+          volumes:
+            - name: shared-logs
+              persistentVolumeClaim:
+                claimName: shared-logs-pvc
+          terminationGracePeriodSeconds: 60

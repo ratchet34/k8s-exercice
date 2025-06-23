@@ -1,0 +1,22 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-service
+  namespace: production
+  labels:
+    app: frontend
+    environment: production
+    tier: presentation
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "80"
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 80
+      targetPort: 80
+      protocol: TCP
+      name: http
+  selector:
+    app: frontend

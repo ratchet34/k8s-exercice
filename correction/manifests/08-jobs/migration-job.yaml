@@ -1,0 +1,167 @@
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: database-migration-job
+  namespace: production
+  labels:
+    app: migration
+    environment: production
+    tier: utility
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+  completions: 1
+  parallelism: 1
+  template:
+    metadata:
+      labels:
+        app: migration
+        environment: production
+        tier: utility
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      initContainers:
+        # Wait for PostgreSQL to be ready
+        - name: wait-for-postgres
+          image: postgres:15
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Waiting for PostgreSQL to be ready..."
+              until pg_isready -h postgres-service -p 5432 -U myuser; do
+                echo "PostgreSQL is not ready yet... waiting 5 seconds"
+                sleep 5
+              done
+              echo "PostgreSQL is ready!"
+          env:
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_USER
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_PASSWORD
+      containers:
+        - name: migration
+          image: postgres:15
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Starting database migration..."
+
+              # Create migration SQL
+              cat > /tmp/migration.sql << 'EOF'
+              -- Create users table
+              CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                username VARCHAR(50) UNIQUE NOT NULL,
+                email VARCHAR(100) UNIQUE NOT NULL,
+                password_hash VARCHAR(255) NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+              );
+
+              -- Create posts table
+              CREATE TABLE IF NOT EXISTS posts (
+                id SERIAL PRIMARY KEY,
+                title VARCHAR(200) NOT NULL,
+                content TEXT,
+                user_id INTEGER REFERENCES users(id),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+              );
+
+              -- Create indexes
+              CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+              CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+              CREATE INDEX IF NOT EXISTS idx_posts_user_id ON posts(user_id);
+              CREATE INDEX IF NOT EXISTS idx_posts_created_at ON posts(created_at);
+
+              -- Insert sample data
+              INSERT INTO users (username, email, password_hash) VALUES 
+                ('admin', 'admin@example.com', '$2b$10$dummy.hash.value'),
+                ('user1', 'user1@example.com', '$2b$10$dummy.hash.value')
+              ON CONFLICT (username) DO NOTHING;
+
+              INSERT INTO posts (title, content, user_id) VALUES 
+                ('Welcome Post', 'Welcome to our Kubernetes application!', 1),
+                ('Sample Post', 'This is a sample post to demonstrate the database.', 1)
+              ON CONFLICT DO NOTHING;
+
+              -- Create application-specific tables
+              CREATE TABLE IF NOT EXISTS app_config (
+                key VARCHAR(50) PRIMARY KEY,
+                value TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+              );
+
+              INSERT INTO app_config (key, value) VALUES 
+                ('app_version', '1.0.0'),
+                ('maintenance_mode', 'false'),
+                ('max_upload_size', '10MB')
+              ON CONFLICT (key) DO UPDATE SET 
+                value = EXCLUDED.value;
+
+              EOF
+
+              echo "Executing migration SQL..."
+              psql -h postgres-service -U $POSTGRES_USER -d $POSTGRES_DB -f /tmp/migration.sql
+
+              if [ $? -eq 0 ]; then
+                echo "Migration completed successfully!"
+                
+                # Verify migration
+                echo "Verifying migration..."
+                psql -h postgres-service -U $POSTGRES_USER -d $POSTGRES_DB -c "\dt"
+                psql -h postgres-service -U $POSTGRES_USER -d $POSTGRES_DB -c "SELECT COUNT(*) as user_count FROM users;"
+                psql -h postgres-service -U $POSTGRES_USER -d $POSTGRES_DB -c "SELECT COUNT(*) as post_count FROM posts;"
+                
+                echo "Database migration job completed successfully!"
+              else
+                echo "Migration failed!"
+                exit 1
+              fi
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_PASSWORD
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_DB
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_PASSWORD
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+      terminationGracePeriodSeconds: 30
