@@ -9,36 +9,33 @@ metadata:
     kubernetes.io/ingress.class: "nginx"
     # Ou pour les versions récentes :
     # ingressClassName: nginx
-    
+
     # Redirection HTTP vers HTTPS
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
     nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
-    
+
     # Configuration CORS (alternative aux snippets)
     nginx.ingress.kubernetes.io/cors-allow-origin: "*"
     nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
     nginx.ingress.kubernetes.io/cors-allow-headers: "DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization"
     nginx.ingress.kubernetes.io/enable-cors: "true"
-    
+
     # Rate limiting (alternative aux snippets)
     nginx.ingress.kubernetes.io/rate-limit-connections: "10"
     nginx.ingress.kubernetes.io/rate-limit-request-per-second: "20"
-    
+
     # Taille maximale du body
     nginx.ingress.kubernetes.io/proxy-body-size: "50m"
-    
+
     # Timeouts
     nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
-    
-    # Headers de sécurité
-    nginx.ingress.kubernetes.io/configuration-snippet: |
-      more_set_headers "X-Content-Type-Options: nosniff";
-      more_set_headers "X-Frame-Options: DENY";
-      more_set_headers "X-XSS-Protection: 1; mode=block";
-      more_set_headers "Referrer-Policy: strict-origin-when-cross-origin";
-      
+
+    # Headers de sécurité (utiliser les annotations natives)
+    nginx.ingress.kubernetes.io/custom-http-errors: "404,503"
+    nginx.ingress.kubernetes.io/default-backend: "default-http-backend"
+
   labels:
     app: app-ingress
     environment: production

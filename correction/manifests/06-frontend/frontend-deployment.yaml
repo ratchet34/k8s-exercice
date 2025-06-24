@@ -66,11 +66,20 @@ spec:
               mountPath: /usr/share/nginx/html
             - name: shared-logs
               mountPath: /var/log/nginx
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            - name: nginx-run
+              mountPath: /var/run
+            - name: tmp-volume
+              mountPath: /tmp
           securityContext:
             runAsUser: 101
             runAsGroup: 101
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
           livenessProbe:
             httpGet:
               path: /health
@@ -96,6 +105,8 @@ spec:
             - /bin/sh
             - -c
             - |
+              echo "OK" > /usr/share/nginx/html/health
+
               cat > /usr/share/nginx/html/index.html << 'EOF'
               <!DOCTYPE html>
               <html lang="en">
@@ -110,6 +121,7 @@ spec:
                       .status { padding: 10px; margin: 10px; border-radius: 5px; }
                       .healthy { background: rgba(0,255,0,0.2); }
                       .loading { background: rgba(255,255,0,0.2); }
+                      .error { background: rgba(255,0,0,0.2); }
                       button { background: #4CAF50; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; margin: 5px; }
                       button:hover { background: #45a049; }
                   </style>
@@ -169,4 +181,10 @@ spec:
         - name: shared-logs
           persistentVolumeClaim:
             claimName: shared-logs-pvc
+        - name: nginx-cache
+          emptyDir: {}
+        - name: nginx-run
+          emptyDir: {}
+        - name: tmp-volume
+          emptyDir: {}
       terminationGracePeriodSeconds: 30
